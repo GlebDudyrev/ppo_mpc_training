@@ -70,7 +70,7 @@ models/
 logs/
 results/
 checkpoints/
-experiments/
+/experiments/
 tensorboard/
 
 # Common experiment outputs
