@@ -65,6 +65,9 @@ class TurtleBot3Env(gym.Env, Node):
         Node.__init__(self, "training_env")
         gym.Env.__init__(self)
 
+        if mode not in {"train", "eval"}:
+            raise ValueError(f"Unsupported mode: {mode}")
+
         self.control_dt = float(control_dt)
         self.lidar_num_beams = int(lidar_num_beams)
         self.lidar_max_range = float(lidar_max_range)
@@ -115,6 +118,7 @@ class TurtleBot3Env(gym.Env, Node):
         self.robot_angular_velocity = 0.0
         self.scan_data = np.ones(self.lidar_num_beams, dtype=np.float32)
         self.prev_dist = 0.0
+        self.initial_dist = 0.0
         self.prev_action = np.zeros(2, dtype=np.float32)
         self.target_spawned_ = False
 
@@ -153,6 +157,12 @@ class TurtleBot3Env(gym.Env, Node):
         scan_values = np.clip(scan_values, 0.01, self.lidar_max_range)
         indices = np.linspace(0, len(scan_values) - 1, self.lidar_num_beams, dtype=int)
         self.scan_data = (scan_values[indices] / self.lidar_max_range).astype(np.float32)
+
+    def _await_new_scan_data(self, timeout_sec: float = 1.0) -> None:
+        self.scan_data = None
+        wait_start = time.time()
+        while self.scan_data is None and time.time() - wait_start < timeout_sec:
+            self.spin_some(timeout_sec=0.01, repeat=1)
 
     def odom_callback(self, odom: Odometry) -> None:
         self.robot_x = float(odom.pose.pose.position.x)
@@ -227,20 +237,23 @@ class TurtleBot3Env(gym.Env, Node):
         future.add_done_callback(partial(self.callback_create_target))
 
     # --------------------------
-    # Task geometry and observation
+    # Task geometry and obs
     # --------------------------
     def get_distance(self) -> float:
-        return float(math.hypot(self.target_x - self.robot_x, self.target_y - self.robot_y))
+        dx = self.target_x - self.robot_x
+        dy = self.target_y - self.robot_y
+        return float(math.hypot(dx, dy))
 
     def get_normalized_distance(self) -> float:
-        return float(np.clip(self.get_distance() / self.goal_norm_max_dist, 0.0, 1.0))
+        distance = self.get_distance()
+        return float(np.clip(distance / self.goal_norm_max_dist, 0.0, 1.0))
 
     def get_relative_angle(self) -> float:
         goal_angle = math.atan2(self.target_y - self.robot_y, self.target_x - self.robot_x)
         heading = goal_angle - self.robot_yaw
-        while heading > math.pi:
+        if heading > math.pi:
             heading -= 2.0 * math.pi
-        while heading < -math.pi:
+        elif heading < -math.pi:
             heading += 2.0 * math.pi
         return float(heading / math.pi)
 
@@ -251,11 +264,13 @@ class TurtleBot3Env(gym.Env, Node):
 
     def get_observation(self) -> np.ndarray:
         self.spin_some(timeout_sec=0.0, repeat=3)
+        dist = self.get_normalized_distance()
+        angle = self.get_relative_angle()
         norm_v, norm_w = self.get_normalized_velocities()
-        return np.array(
-            [*self.scan_data, self.get_normalized_distance(), self.get_relative_angle(), norm_v, norm_w],
-            dtype=np.float32,
-        )
+        return np.array([*self.scan_data, dist, angle, norm_v, norm_w], dtype=np.float32)
+
+    def current_min_lidar_distance(self) -> float:
+        return float(np.min(self.scan_data) * self.lidar_max_range)
 
     # --------------------------
     # Episode sampling/reset
@@ -265,24 +280,27 @@ class TurtleBot3Env(gym.Env, Node):
             raise ValueError(f"Unsupported mode: {mode}")
         self.mode = mode
 
-    def _uniform_xy(self, bounds: tuple[tuple[float, float], tuple[float, float]]) -> tuple[float, float]:
+    def _sample_xy(self, bounds: tuple[tuple[float, float], tuple[float, float]]) -> tuple[float, float]:
         (x_min, x_max), (y_min, y_max) = bounds
         return float(self.np_random.uniform(x_min, x_max)), float(self.np_random.uniform(y_min, y_max))
 
     def _sample_train_episode(self) -> tuple[float, float, float, float, float]:
-        last_candidate = (0.0, 0.0, 1.5, 0.0, 0.0)
-        for _ in range(max(1, self.reset_resample_attempts)):
-            robot_x, robot_y = self._uniform_xy(self.train_robot_bounds)
-            target_x, target_y = self._uniform_xy(self.train_target_bounds)
-            robot_yaw = float(self.np_random.uniform(-math.pi, math.pi))
-            last_candidate = (robot_x, robot_y, target_x, target_y, robot_yaw)
-            dist = math.hypot(robot_x - target_x, robot_y - target_y)
+        for _ in range(100):
+            robot_x, robot_y = self._sample_xy(self.train_robot_bounds)
+            target_x, target_y = self._sample_xy(self.train_target_bounds)
+            dist = math.hypot(target_x - robot_x, target_y - robot_y)
             if dist < self.min_start_goal_dist:
                 continue
             if self.max_start_goal_dist is not None and dist > self.max_start_goal_dist:
                 continue
-            return last_candidate
-        return last_candidate
+            robot_yaw = float(self.np_random.uniform(-math.pi, math.pi))
+            return robot_x, robot_y, robot_yaw, target_x, target_y
+
+        # Safe fallback if bounds are too restrictive.
+        robot_x, robot_y = self._sample_xy(self.train_robot_bounds)
+        target_x, target_y = self._sample_xy(self.train_target_bounds)
+        robot_yaw = float(self.np_random.uniform(-math.pi, math.pi))
+        return robot_x, robot_y, robot_yaw, target_x, target_y
 
     def _sample_eval_episode(self) -> tuple[float, float, float, float, float]:
         if not self.eval_episodes:
@@ -292,36 +310,41 @@ class TurtleBot3Env(gym.Env, Node):
         return (
             float(scenario["robot_x"]),
             float(scenario["robot_y"]),
+            float(scenario.get("robot_yaw", 0.0)),
             float(scenario["target_x"]),
             float(scenario["target_y"]),
-            float(scenario.get("robot_yaw", 0.0)),
         )
 
-    def _apply_episode_pose(
-        self,
-        robot_x: float,
-        robot_y: float,
-        target_x: float,
-        target_y: float,
-        robot_yaw: float,
-    ) -> None:
-        self.robot_x = float(robot_x)
-        self.robot_y = float(robot_y)
-        self.robot_yaw = float(robot_yaw)
-        self.target_x = float(target_x)
-        self.target_y = float(target_y)
+    def _step_info(self, *, terminated: bool = False, truncated: bool = False, reward_info: Optional[dict] = None) -> dict:
+        """Return instantaneous step-level facts for logging and benchmarking.
 
-        self.teleport_entity("burger", self.robot_x, self.robot_y, yaw=self.robot_yaw)
-        if not self.target_spawned_:
-            self.spawn_target(self.target_x, self.target_y)
-            self.spin_some(timeout_sec=0.01, repeat=20)
-        self.teleport_entity("target", self.target_x, self.target_y, 0.5)
-
-    def _wait_for_fresh_sensors(self, timeout_sec: float = 1.0) -> None:
-        self.scan_data = np.ones(self.lidar_num_beams, dtype=np.float32)
-        wait_start = time.time()
-        while time.time() - wait_start < timeout_sec:
-            self.spin_some(timeout_sec=0.01, repeat=1)
+        Episode-level aggregates such as path length, average speed and action
+        smoothness are intentionally computed outside the environment by the
+        benchmark layer.
+        """
+        min_lidar = self.current_min_lidar_distance()
+        info = {
+            "mode": self.mode,
+            "scene_name": self.scene_name,
+            "world_name": self.world_name,
+            "current_step": int(self.current_step),
+            "terminated": bool(terminated),
+            "truncated": bool(truncated),
+            "timeout": bool(truncated and not terminated),
+            "distance_to_goal": float(self.get_distance()),
+            "initial_distance_to_goal": float(self.initial_dist),
+            "min_lidar_distance": float(min_lidar),
+            "robot_x": float(self.robot_x),
+            "robot_y": float(self.robot_y),
+            "robot_yaw": float(self.robot_yaw),
+            "target_x": float(self.target_x),
+            "target_y": float(self.target_y),
+            "linear_velocity": float(self.robot_linear_velocity),
+            "angular_velocity": float(self.robot_angular_velocity),
+        }
+        if reward_info:
+            info.update(reward_info)
+        return info
 
     def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None):
         super().reset(seed=seed)
@@ -334,50 +357,52 @@ class TurtleBot3Env(gym.Env, Node):
         if override_mode is not None:
             self.set_mode(override_mode)
 
-        explicit_pose = {"robot_x", "robot_y", "target_x", "target_y"}.issubset(options.keys())
-        accepted = False
-        attempts = 1 if (self.mode == "eval" or explicit_pose) else max(1, self.reset_resample_attempts)
+        if {"robot_x", "robot_y", "target_x", "target_y"}.issubset(options.keys()):
+            robot_x = float(options["robot_x"])
+            robot_y = float(options["robot_y"])
+            robot_yaw = float(options.get("robot_yaw", 0.0))
+            target_x = float(options["target_x"])
+            target_y = float(options["target_y"])
+        elif self.mode == "eval":
+            robot_x, robot_y, robot_yaw, target_x, target_y = self._sample_eval_episode()
+        else:
+            robot_x, robot_y, robot_yaw, target_x, target_y = self._sample_train_episode()
 
-        for _ in range(attempts):
-            if explicit_pose:
-                candidate = (
-                    float(options["robot_x"]),
-                    float(options["robot_y"]),
-                    float(options["target_x"]),
-                    float(options["target_y"]),
-                    float(options.get("robot_yaw", 0.0)),
-                )
-            elif self.mode == "eval":
-                candidate = self._sample_eval_episode()
-            else:
-                candidate = self._sample_train_episode()
+        self.robot_x = robot_x
+        self.robot_y = robot_y
+        self.robot_yaw = robot_yaw
+        self.target_x = target_x
+        self.target_y = target_y
 
-            robot_x, robot_y, target_x, target_y, robot_yaw = candidate
-            self._apply_episode_pose(robot_x, robot_y, target_x, target_y, robot_yaw)
-            self._wait_for_fresh_sensors(timeout_sec=1.0)
-            min_lidar = float(np.min(self.scan_data) * self.lidar_max_range)
-            dist = self.get_distance()
-            accepted = explicit_pose or self.mode == "eval" or (
-                min_lidar >= self.reset_min_lidar_distance and dist >= self.min_start_goal_dist
-            )
-            if accepted:
-                break
+        self.teleport_entity("burger", self.robot_x, self.robot_y, yaw=self.robot_yaw)
+        if self.target_spawned_:
+            self.teleport_entity("target", self.target_x, self.target_y, 0.5)
+        else:
+            self.spawn_target(self.target_x, self.target_y)
 
-        if not accepted:
-            self.get_logger().warn("Reset sampling did not find a clearly safe candidate; using last pose")
+        self._await_new_scan_data()
+
+        # If a train reset puts the robot too close to an obstacle, resample a few times.
+        if self.mode == "train":
+            attempts = 0
+            while self.current_min_lidar_distance() < self.reset_min_lidar_distance and attempts < self.reset_resample_attempts:
+                robot_x, robot_y, robot_yaw, target_x, target_y = self._sample_train_episode()
+                self.robot_x = robot_x
+                self.robot_y = robot_y
+                self.robot_yaw = robot_yaw
+                self.target_x = target_x
+                self.target_y = target_y
+                self.teleport_entity("burger", self.robot_x, self.robot_y, yaw=self.robot_yaw)
+                self.teleport_entity("target", self.target_x, self.target_y, 0.5)
+                self._await_new_scan_data()
+                attempts += 1
 
         self.prev_dist = self.get_distance()
+        self.initial_dist = self.prev_dist
         self.prev_action = np.zeros(2, dtype=np.float32)
         self.current_step = 0
         obs = self.get_observation()
-        info = {
-            "mode": self.mode,
-            "scene_name": self.scene_name,
-            "world_name": self.world_name,
-            "distance_to_goal": self.prev_dist,
-            "min_lidar_distance": float(np.min(self.scan_data) * self.lidar_max_range),
-        }
-        return obs, info
+        return obs, self._step_info()
 
     # --------------------------
     # Action, reward, step
@@ -391,7 +416,13 @@ class TurtleBot3Env(gym.Env, Node):
         self.cmd_vel_publisher_.publish(cmd)
         return clipped
 
-    def calculate_reward(self, *, current_dist: float, min_laser_dist: float, action: np.ndarray) -> tuple[float, bool, dict]:
+    def calculate_reward(
+        self,
+        *,
+        current_dist: float,
+        min_laser_dist: float,
+        action: np.ndarray,
+    ) -> tuple[float, bool, dict, float]:
         success = current_dist < self.success_distance
         collision = min_laser_dist < self.collision_distance
 
@@ -401,7 +432,8 @@ class TurtleBot3Env(gym.Env, Node):
             safety_penalty = (self.safety_distance - min_laser_dist) * self.safety_penalty_scale
 
         action_delta = np.asarray(action, dtype=np.float32) - self.prev_action
-        smoothness_penalty = self.action_smoothness_scale * float(np.dot(action_delta, action_delta))
+        action_delta_sq = float(np.dot(action_delta, action_delta))
+        smoothness_penalty = self.action_smoothness_scale * action_delta_sq
 
         reward = progress - safety_penalty - smoothness_penalty - self.step_penalty
         if success:
@@ -416,8 +448,10 @@ class TurtleBot3Env(gym.Env, Node):
             "step_penalty": float(self.step_penalty),
             "success": bool(success),
             "collision": bool(collision),
+            "action_delta_sq": float(action_delta_sq),
         }
-        return float(reward), bool(success or collision), info
+        terminated = success or collision
+        return float(reward), terminated, info, action_delta_sq
 
     def step(self, action):
         self.current_step += 1
@@ -428,9 +462,10 @@ class TurtleBot3Env(gym.Env, Node):
             self.spin_some(timeout_sec=0.01, repeat=1)
 
         new_obs = self.get_observation()
-        min_laser_dist = float(np.min(self.scan_data) * self.lidar_max_range)
+        min_laser_dist = self.current_min_lidar_distance()
         current_dist = self.get_distance()
-        reward, terminated, reward_info = self.calculate_reward(
+
+        reward, terminated, reward_info, action_delta_sq = self.calculate_reward(
             current_dist=current_dist,
             min_laser_dist=min_laser_dist,
             action=clipped_action,
@@ -440,18 +475,17 @@ class TurtleBot3Env(gym.Env, Node):
         self.prev_dist = current_dist
         self.prev_action = clipped_action.copy()
 
+        info = self._step_info(terminated=terminated, truncated=truncated, reward_info=reward_info)
+        info.update(
+            {
+                "action": clipped_action.astype(np.float32),
+                "commanded_linear_velocity": float(clipped_action[0]),
+                "commanded_angular_velocity": float(clipped_action[1]),
+                "action_delta_sq": float(action_delta_sq),
+            }
+        )
         if terminated or truncated:
             self.stop_robot()
-
-        info = {
-            **reward_info,
-            "scene_name": self.scene_name,
-            "world_name": self.world_name,
-            "distance_to_goal": float(current_dist),
-            "min_lidar_distance": float(min_laser_dist),
-            "current_step": int(self.current_step),
-            "action": clipped_action.astype(np.float32),
-        }
         return new_obs, reward, terminated, truncated, info
 
     def close(self):
