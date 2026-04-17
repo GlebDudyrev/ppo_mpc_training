@@ -30,6 +30,7 @@ setup(
             'target_creator = tb3_training.target_creator:main',
             'check_env = tb3_training.check_env:main',
             'tb3_train = tb3_training.tb3_train:main',
+            'tb3_eval = tb3_training.tb3_eval:main',
             'tb3_train_mpc = tb3_training.tb3_train_mpc:main',
         ],
     },

@@ -1,0 +1,22 @@
+# Pinned Python dependencies for the tb3_training project.
+#
+# IMPORTANT:
+# 1) Install PyTorch first using the official selector:
+#    https://pytorch.org/get-started/locally/
+#    pip install torch torchvision torchaudio
+# 2) Then install this file:
+#    pip install -r requirements.txt
+# 3) Finally install the package in editable mode:
+#    pip install -e .
+#
+# Notes:
+# - Stable-Baselines3 2.8.0 requires Python >= 3.10 and PyTorch >= 2.3.
+# - Torch is intentionally not pinned here because the correct wheel depends on
+#   your compute platform (CPU / CUDA / ROCm).
+# - NumPy is kept on the 1.x line for safer compatibility with ROS 2 binary
+#   packages and native extensions.
+
+stable-baselines3==2.8.0
+gymnasium==1.2.3
+tensorboard==2.20.0
+numpy>=1.24,<2.0

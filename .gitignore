@@ -1,0 +1,98 @@
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.python-version
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Packaging / build
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+
+# Jupyter / notebooks
+.ipynb_checkpoints/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# =========================
+# ROS2 / colcon / ament
+# =========================
+log/
+build/
+install/
+
+# Generated package metadata caches
+.colcon/
+
+# =========================
+# Gazebo / simulation outputs
+# =========================
+*.world.sdf
+*.state
+*.log
+
+# =========================
+# Stable-Baselines / RL outputs
+# =========================
+models/
+logs/
+results/
+checkpoints/
+experiments/
+tensorboard/
+
+# Common experiment outputs
+*.zip
+*.pkl
+*.npz
+*.onnx
+
+# If you want to keep model directories tracked, remove the lines above
+# and instead ignore only their contents via a placeholder strategy.
+
+# =========================
+# Local runtime / config overrides
+# =========================
+.env
+.env.*
+local_config.yaml
+local_config.yml
+
+# =========================
+# Temporary files
+# =========================
+*.tmp
+*.temp
+*.bak

@@ -1,0 +1,17 @@
+# Direct Python dependencies for this project.
+#
+# IMPORTANT FOR ROS 2:
+# Keep NumPy on the 1.x line to avoid ABI issues with ROS 2 / apt-installed
+# binary extensions and related native modules.
+#
+# Install PyTorch separately using the official selector for your CPU/CUDA setup:
+# https://pytorch.org/get-started/locally/
+# pip install torch torchvision torchaudio
+#
+# After that, install these project dependencies with:
+#   pip install -r requirements.txt
+
+stable-baselines3==2.8.0
+gymnasium==1.2.3
+tensorboard==2.20.0
+numpy>=1.24,<2.0

@@ -1,61 +1,49 @@
-#!/usr/bin/env Python3
-import os
-import rclpy
-from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import CheckpointCallback
-from .training_env import TurtleBot3Env
+#!/usr/bin/env python3
+from __future__ import annotations
 
-def main(args=None):
-    rclpy.init(args=args)
+import argparse
 
-    home_path = os.path.expanduser('~')
-    base_dir = os.path.join(home_path, 'turtlebot3_rl_results')
-    log_dir = os.path.join(base_dir, 'logs')
-    save_dir = os.path.join(base_dir, 'models')
+from tb3_training.registries import list_envs, list_models
+from tb3_training.runners.train_runner import TrainRunConfig, run_train
 
-    if not os.path.exists(log_dir):
-        os.makedirs(log_dir, exist_ok=True)
-    if not os.path.exists(save_dir):
-        os.makedirs(save_dir, exist_ok=True)
 
-    env = TurtleBot3Env()
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Universal TurtleBot3 training runner")
+    parser.add_argument("--model", choices=list_models(), default="pure_rl")
+    parser.add_argument("--env", choices=list_envs(), default="simple_env")
+    parser.add_argument("--total-timesteps", type=int, default=200_000)
+    parser.add_argument("--learning-rate", type=float, default=3e-4)
+    parser.add_argument("--n-steps", type=int, default=2048)
+    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--n-epochs", type=int, default=10)
+    parser.add_argument("--gamma", type=float, default=0.99)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--checkpoint-freq", type=int, default=10_000)
+    parser.add_argument("--experiments-root", type=str, default=None)
+    parser.add_argument("--device", type=str, default="auto")
+    parser.add_argument("--no-progress-bar", action="store_true")
+    return parser
 
-    model = PPO(
-        policy="MlpPolicy",
-        env=env,
-        learning_rate=3e-4,
-        n_steps=2048,
-        batch_size=64,
-        n_epochs=10,
-        gamma=0.99,
-        verbose=1,
-        tensorboard_log=log_dir
+
+def main(args: list[str] | None = None) -> int:
+    parsed = build_arg_parser().parse_args(args=args)
+    config = TrainRunConfig(
+        model_name=parsed.model,
+        env_name=parsed.env,
+        total_timesteps=parsed.total_timesteps,
+        learning_rate=parsed.learning_rate,
+        n_steps=parsed.n_steps,
+        batch_size=parsed.batch_size,
+        n_epochs=parsed.n_epochs,
+        gamma=parsed.gamma,
+        seed=parsed.seed,
+        checkpoint_freq=parsed.checkpoint_freq,
+        experiments_root=parsed.experiments_root,
+        progress_bar=not parsed.no_progress_bar,
+        device=parsed.device,
     )
+    return run_train(config)
 
-    checkpoint_callback = CheckpointCallback(
-        save_freq=10000,
-        save_path=save_dir,
-        name_prefix="ppo_turtlebot3_model"
-    )
 
-    print(f"Обучение началось! Логи пишутся в: {log_dir}")
-    try:
-        model.learn(
-            total_timesteps=200000, 
-            callback=checkpoint_callback,
-            progress_bar=True
-        )
-        
-        model.save(os.path.join(save_dir, "final_model"))
-        print("Обучение завершено успешно!")
-
-    except KeyboardInterrupt:
-        print("Обучение превано пользователем. Сохраняю текущие веса...")
-        model.save(os.path.join(save_dir, "interrupted_model"))
-
-    finally:
-        env.destroy_node()
-        rclpy.shutdown()
-
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    raise SystemExit(main())
