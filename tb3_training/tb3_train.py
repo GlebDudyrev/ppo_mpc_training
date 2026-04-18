@@ -22,6 +22,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--experiments-root", type=str, default=None)
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--no-progress-bar", action="store_true")
+    parser.add_argument("--validate-gradients", type=bool, default=False)
+
     return parser
 
 
@@ -41,6 +43,7 @@ def main(args: list[str] | None = None) -> int:
         experiments_root=parsed.experiments_root,
         progress_bar=not parsed.no_progress_bar,
         device=parsed.device,
+        validate_gradients=parsed.validate_gradients
     )
     return run_train(config)
 

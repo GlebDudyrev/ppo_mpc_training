@@ -27,6 +27,8 @@ EPISODE_COLUMNS = [
     "avg_abs_angular_speed",
     "mean_action_smoothness",
     "action_smoothness_sum",
+    "v_saturation_rate",
+    "omega_saturation_rate",
     "final_robot_x",
     "final_robot_y",
     "final_robot_yaw",
@@ -62,13 +64,6 @@ def _mean_finite(values: Iterable[float], default: float = 0.0) -> float:
 
 @dataclass
 class EpisodeMetricsRecorder:
-    """Accumulates episode-level metrics from step-level environment info.
-
-    The environment should only provide instantaneous facts in ``info``. This
-    recorder computes cumulative quantities such as path length, minimum
-    clearance, average speeds and action smoothness.
-    """
-
     episode_index: int
     initial_info: dict[str, Any] | None = None
     rewards: list[float] = field(default_factory=list)
@@ -81,6 +76,9 @@ class EpisodeMetricsRecorder:
     last_info: dict[str, Any] = field(default_factory=dict)
     terminated: bool = False
     truncated: bool = False
+    max_linear_velocity: float = 0.22
+    max_angular_velocity: float = 2.8
+    saturation_fraction: float = 0.98
 
     def start(self, initial_info: dict[str, Any]) -> None:
         self.initial_info = dict(initial_info)
@@ -153,6 +151,16 @@ class EpisodeMetricsRecorder:
         smoothness_mean = float(smoothness_sum / len(deltas)) if deltas else 0.0
         return smoothness_mean, smoothness_sum
 
+    def _saturation_rates(self) -> tuple[float, float]:
+        if not self.actions:
+            return 0.0, 0.0
+        v_threshold = self.saturation_fraction * self.max_linear_velocity
+        omega_threshold = self.saturation_fraction * self.max_angular_velocity
+        v_count = sum(abs(float(action[0])) >= v_threshold for action in self.actions)
+        omega_count = sum(abs(float(action[1])) >= omega_threshold for action in self.actions)
+        total = len(self.actions)
+        return float(v_count / total), float(omega_count / total)
+
     def finish(self) -> dict[str, Any]:
         info = self.last_info or {}
         initial_info = self.initial_info or {}
@@ -174,6 +182,7 @@ class EpisodeMetricsRecorder:
 
         min_lidar = min(self.min_lidar_values) if self.min_lidar_values else float("nan")
         mean_action_smoothness, action_smoothness_sum = self._action_smoothness()
+        v_saturation_rate, omega_saturation_rate = self._saturation_rates()
 
         final_x = _safe_float(info.get("robot_x"))
         final_y = _safe_float(info.get("robot_y"))
@@ -195,6 +204,8 @@ class EpisodeMetricsRecorder:
             "avg_abs_angular_speed": _mean_finite(self.angular_speeds),
             "mean_action_smoothness": mean_action_smoothness,
             "action_smoothness_sum": action_smoothness_sum,
+            "v_saturation_rate": v_saturation_rate,
+            "omega_saturation_rate": omega_saturation_rate,
             "final_robot_x": final_x,
             "final_robot_y": final_y,
             "final_robot_yaw": final_yaw,
@@ -207,8 +218,6 @@ class EpisodeMetricsRecorder:
 
 @dataclass
 class EvaluationBenchmark:
-    """Stores and summarizes evaluation episode metrics."""
-
     episodes: list[dict[str, Any]] = field(default_factory=list)
 
     def add_episode(self, metrics: dict[str, Any]) -> None:
@@ -242,6 +251,8 @@ class EvaluationBenchmark:
             "mean_avg_abs_linear_speed": self._mean_key("avg_abs_linear_speed"),
             "mean_avg_abs_angular_speed": self._mean_key("avg_abs_angular_speed"),
             "mean_action_smoothness": self._mean_key("mean_action_smoothness"),
+            "mean_v_saturation_rate": self._mean_key("v_saturation_rate"),
+            "mean_omega_saturation_rate": self._mean_key("omega_saturation_rate"),
         }
 
     def _mean_key(self, key: str) -> float:

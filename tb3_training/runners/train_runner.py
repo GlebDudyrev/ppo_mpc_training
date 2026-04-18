@@ -6,10 +6,11 @@ from pathlib import Path
 from typing import Optional
 
 import rclpy
-from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.utils import set_random_seed
 
+from tb3_training.debug.gradient_monitor import GradientMonitoringCallback
 from tb3_training.experiments import ExperimentNamespace, make_version_dir
 from tb3_training.registries import get_env_spec, get_model_spec
 
@@ -29,6 +30,7 @@ class TrainRunConfig:
     experiments_root: Optional[str] = None
     progress_bar: bool = True
     device: str = "auto"
+    validate_gradients: bool = False
 
 
 def save_train_config(run_dir: Path, config: TrainRunConfig, env_metadata: dict | None = None) -> None:
@@ -40,6 +42,7 @@ def save_train_config(run_dir: Path, config: TrainRunConfig, env_metadata: dict 
             "tensorboard": "tensorboard",
             "checkpoints": "checkpoints",
             "final_model": "final_model/model",
+            "gradient_stats": "gradient_stats.json" if config.validate_gradients else None,
         },
     }
     with (run_dir / "config.json").open("w", encoding="utf-8") as fp:
@@ -72,10 +75,9 @@ def run_train(config: TrainRunConfig) -> int:
         tensorboard_dir.mkdir(parents=True, exist_ok=True)
         checkpoints_dir.mkdir(parents=True, exist_ok=True)
         final_model_dir.mkdir(parents=True, exist_ok=True)
-
         env_spec = get_env_spec(config.env_name)
-        model_spec = get_model_spec(config.model_name)
         save_train_config(run_dir, config, env_spec.metadata())
+        model_spec = get_model_spec(config.model_name)
 
         train_env_raw = env_spec.make(mode="train")
         train_env_raw.reset(seed=config.seed)
@@ -86,6 +88,15 @@ def run_train(config: TrainRunConfig) -> int:
             save_path=str(checkpoints_dir),
             name_prefix=f"{config.model_name}_{config.env_name}",
         )
+        callbacks = [checkpoint_callback]
+        if config.validate_gradients:
+            callbacks.append(
+                GradientMonitoringCallback(
+                    save_path=run_dir / "gradient_stats.json",
+                    verbose=1,
+                )
+            )
+        callback = CallbackList(callbacks)
 
         model = model_spec.build(
             env=train_env,
@@ -101,12 +112,12 @@ def run_train(config: TrainRunConfig) -> int:
         )
 
         print(f"[tb3_train] run_dir={run_dir}")
-        print(f"[tb3_train] model={config.model_name} env={config.env_name} world={env_spec.world_name}")
+        print(f"[tb3_train] model={config.model_name} env={config.env_name}")
         print(f"[tb3_train] total_timesteps={config.total_timesteps}, seed={config.seed}")
 
         model.learn(
             total_timesteps=config.total_timesteps,
-            callback=checkpoint_callback,
+            callback=callback,
             progress_bar=config.progress_bar,
         )
 

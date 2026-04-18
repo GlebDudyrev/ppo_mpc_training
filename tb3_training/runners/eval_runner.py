@@ -25,17 +25,11 @@ class EvalRunConfig:
     device: str = "auto"
 
 
-def save_eval_config(
-    run_dir: Path,
-    config: EvalRunConfig,
-    train_run_dir: Path,
-    env_metadata: dict | None = None,
-) -> None:
+def save_eval_config(run_dir: Path, config: EvalRunConfig, train_run_dir: Path) -> None:
     payload = {
         **asdict(config),
         "phase": "eval",
         "train_run_dir": str(train_run_dir),
-        "env_metadata": env_metadata or {},
         "artifacts": {
             "summary": "eval_summary.json",
             "episodes": "episodes.csv",
@@ -72,18 +66,18 @@ def run_eval(config: EvalRunConfig) -> int:
             phase="eval",
         )
         eval_run_dir = make_version_dir(eval_namespace, root=config.experiments_root)
+        save_eval_config(eval_run_dir, config, train_run_dir)
 
         env_spec = get_env_spec(config.env_name)
         model_spec = get_model_spec(config.model_name)
-        save_eval_config(eval_run_dir, config, train_run_dir, env_spec.metadata())
-
         env = env_spec.make(mode="eval")
+        env.reset(seed=config.seed)
         model = model_spec.load(str(model_path), device=config.device)
-        benchmark = EvaluationBenchmark()
 
+        benchmark = EvaluationBenchmark()
         for episode_idx in range(config.episodes):
             obs, info = env.reset(seed=config.seed + episode_idx)
-            recorder = EpisodeMetricsRecorder(episode_index=episode_idx + 1)
+            recorder = EpisodeMetricsRecorder(episode_index=episode_idx)
             recorder.start(info)
 
             terminated = False
@@ -93,9 +87,9 @@ def run_eval(config: EvalRunConfig) -> int:
                 obs, reward, terminated, truncated, info = env.step(action)
                 recorder.record_step(
                     action=action,
-                    reward=float(reward),
-                    terminated=bool(terminated),
-                    truncated=bool(truncated),
+                    reward=reward,
+                    terminated=terminated,
+                    truncated=truncated,
                     info=info,
                 )
 
@@ -105,15 +99,13 @@ def run_eval(config: EvalRunConfig) -> int:
                 "[tb3_eval] "
                 f"episode={episode_idx + 1}/{config.episodes} "
                 f"steps={metrics['steps']} return={metrics['return']:.3f} "
-                f"success={metrics['success']} collision={metrics['collision']} timeout={metrics['timeout']} "
-                f"final_dist={metrics['final_distance_to_goal']:.3f} "
-                f"path_len={metrics['path_length']:.3f} "
-                f"min_lidar={metrics['episode_min_lidar_distance']:.3f}"
+                f"final_distance={metrics['final_distance_to_goal']:.3f} "
+                f"collision={metrics['collision']} success={metrics['success']} "
+                f"v_sat={metrics['v_saturation_rate']:.3f} w_sat={metrics['omega_saturation_rate']:.3f}"
             )
 
-        summary = benchmark.summary()
         summary_path, episodes_path = benchmark.save(eval_run_dir, output_json=config.output_json)
-
+        summary = benchmark.summary()
         print(
             "[tb3_eval] summary: "
             f"mean_return={summary['mean_return']:.3f}, "
@@ -122,11 +114,11 @@ def run_eval(config: EvalRunConfig) -> int:
             f"timeout_rate={summary['timeout_rate']:.3f}, "
             f"mean_steps={summary['mean_steps']:.2f}, "
             f"mean_final_distance={summary['mean_final_distance']:.3f}, "
-            f"mean_path_length={summary['mean_path_length']:.3f}, "
-            f"mean_min_lidar={summary['mean_episode_min_lidar_distance']:.3f}"
+            f"mean_v_sat={summary['mean_v_saturation_rate']:.3f}, "
+            f"mean_w_sat={summary['mean_omega_saturation_rate']:.3f}"
         )
         print(f"[tb3_eval] saved summary to {summary_path}")
-        print(f"[tb3_eval] saved episodes to {episodes_path}")
+        print(f"[tb3_eval] saved episode details to {episodes_path}")
         return 0
 
     except KeyboardInterrupt:
